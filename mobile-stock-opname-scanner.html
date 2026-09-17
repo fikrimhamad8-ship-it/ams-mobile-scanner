@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <title>AMS Mobile Stock Opname Scanner</title>
+
+  <!-- External HTTPS camera page. Host this file outside Apps Script HTMLService. -->
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --primary: #2563eb;
+      --success: #16a34a;
+      --warning: #d97706;
+      --danger: #dc2626;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      padding: max(14px, env(safe-area-inset-top)) 14px max(18px, env(safe-area-inset-bottom));
+    }
+
+    .app {
+      width: min(720px, 100%);
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .topbar,
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--panel);
+      box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
+    }
+
+    .topbar { padding: 15px; }
+
+    .eyebrow {
+      margin: 0 0 4px;
+      color: var(--primary);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.25;
+    }
+
+    .sub {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .metric {
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #f8fafc;
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 3px;
+      font-size: 20px;
+    }
+
+    .camera-card { padding: 12px; }
+
+    #reader {
+      width: 100%;
+      overflow: hidden;
+      border-radius: 14px;
+      background: #020617;
+    }
+
+    #reader video {
+      object-fit: cover !important;
+      border-radius: 14px;
+    }
+
+    .camera-placeholder {
+      min-height: 310px;
+      display: grid;
+      place-items: center;
+      padding: 30px;
+      text-align: center;
+      color: #cbd5e1;
+      background: #020617;
+      border-radius: 14px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      min-height: 44px;
+      border: 0;
+      border-radius: 11px;
+      padding: 10px 14px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 750;
+      cursor: pointer;
+    }
+
+    button:disabled { opacity: .55; cursor: not-allowed; }
+
+    .primary { color: #fff; background: var(--primary); }
+    .secondary { color: var(--text); background: #e2e8f0; }
+
+    .ready-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #94a3b8;
+    }
+
+    .ready-line.ready .dot {
+      background: #22c55e;
+      box-shadow: 0 0 0 4px rgba(34, 197, 94, .13);
+    }
+
+    .feedback {
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: #fff;
+      min-height: 126px;
+    }
+
+    .feedback.success { border-color: #bbf7d0; background: #f0fdf4; }
+    .feedback.warning { border-color: #fed7aa; background: #fff7ed; }
+    .feedback.danger { border-color: #fecaca; background: #fef2f2; }
+
+    .feedback-label {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .feedback.success .feedback-label { color: var(--success); }
+    .feedback.warning .feedback-label { color: var(--warning); }
+    .feedback.danger .feedback-label { color: var(--danger); }
+
+    .feedback h2 {
+      margin: 6px 0 2px;
+      font-size: 22px;
+    }
+
+    .feedback p {
+      margin: 2px 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .manual-card { padding: 12px; }
+
+    .manual-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+
+    input {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      padding: 10px 12px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+      font-size: 14px;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: #93c5fd;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, .10);
+    }
+
+    .error-box {
+      padding: 15px;
+      border: 1px solid #fecaca;
+      border-radius: 14px;
+      color: #991b1b;
+      background: #fef2f2;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .hidden { display: none !important; }
+
+    iframe { display: none; }
+
+    @media (max-width: 560px) {
+      .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .manual-row { grid-template-columns: 1fr; }
+      .actions button { flex: 1 1 auto; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="topbar">
+      <p class="eyebrow">AMS Mobile Scanner</p>
+      <h1 id="sessionTitle">Loading Stock Opname...</h1>
+      <p class="sub" id="sessionSubtitle">Validating pairing session.</p>
+
+      <div class="summary">
+        <div class="metric"><span>Expected</span><strong id="metricExpected">-</strong></div>
+        <div class="metric"><span>Scanned</span><strong id="metricScanned">-</strong></div>
+        <div class="metric"><span>Matched</span><strong id="metricMatched">-</strong></div>
+        <div class="metric"><span>Mismatch</span><strong id="metricMismatch">-</strong></div>
+      </div>
+    </section>
+
+    <div id="fatalError" class="error-box hidden"></div>
+
+    <section class="card camera-card" id="cameraCard">
+      <div id="reader">
+        <div class="camera-placeholder" id="cameraPlaceholder">
+          Tap Start Camera once, allow camera access, then scan asset QR labels continuously.
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="primary" id="startCameraBtn" type="button">Start Camera</button>
+        <button class="secondary" id="stopCameraBtn" type="button" disabled>Stop Camera</button>
+      </div>
+
+      <div class="ready-line" id="readyLine">
+        <span class="dot"></span>
+        <span id="readyText">Waiting for camera</span>
+      </div>
+    </section>
+
+    <section class="feedback" id="feedbackCard">
+      <div class="feedback-label" id="feedbackLabel">Ready</div>
+      <h2 id="feedbackTitle">No scan yet</h2>
+      <p id="feedbackLine1">Scan an asset QR to begin.</p>
+      <p id="feedbackLine2"></p>
+    </section>
+
+    <section class="card manual-card">
+      <form id="manualForm">
+        <div class="manual-row">
+          <input id="manualInput" type="text" placeholder="Manual Asset No / Asset ID / URL" autocomplete="off" spellcheck="false">
+          <button class="secondary" type="submit">Submit</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <iframe name="mobilePostFrame" id="mobilePostFrame" title="Mobile scan transport"></iframe>
+
+  <form id="mobilePostForm" method="post" target="mobilePostFrame" class="hidden">
+    <input type="hidden" name="action" value="stockOpnameMobileScan">
+    <input type="hidden" name="token" id="postToken">
+    <input type="hidden" name="requestId" id="postRequestId">
+    <input type="hidden" name="rawScan" id="postRawScan">
+  </form>
+
+  <script>
+    const MOBILE_SCANNER = {
+      apiUrl: '',
+      token: '',
+      session: null,
+      scanner: null,
+      cameraRunning: false,
+      scanBusy: false,
+      lastDecodedText: '',
+      lastDecodedAt: 0,
+      wakeLock: null
+    };
+
+    const params = new URLSearchParams(window.location.search);
+    MOBILE_SCANNER.apiUrl = String(params.get('api') || '').trim();
+    MOBILE_SCANNER.token = String(params.get('token') || '').trim();
+
+    document.getElementById('startCameraBtn').addEventListener('click', startCamera);
+    document.getElementById('stopCameraBtn').addEventListener('click', stopCamera);
+    document.getElementById('manualForm').addEventListener('submit', function(event) {
+      event.preventDefault();
+      const input = document.getElementById('manualInput');
+      const value = String(input.value || '').trim();
+      if (!value) return;
+      input.value = '';
+      queueScan(value);
+    });
+
+    document.addEventListener('visibilitychange', function() {
+      if (document.visibilityState === 'visible' && MOBILE_SCANNER.cameraRunning) {
+        requestWakeLock();
+      }
+    });
+
+    initialize();
+
+    async function initialize() {
+      if (!MOBILE_SCANNER.apiUrl || !MOBILE_SCANNER.token) {
+        fatal('Pairing link is incomplete. Re-open Mobile Scanner from AMS.');
+        return;
+      }
+
+      document.getElementById('mobilePostForm').action = MOBILE_SCANNER.apiUrl;
+      document.getElementById('postToken').value = MOBILE_SCANNER.token;
+
+      try {
+        const response = await jsonpCall('session', {});
+        if (!response || response.success !== true) {
+          throw new Error(response && response.message ? response.message : 'Pairing session is invalid.');
+        }
+
+        MOBILE_SCANNER.session = response.data || {};
+        renderSession();
+      } catch (error) {
+        fatal(error.message || 'Unable to load Mobile Scanner session.');
+      }
+    }
+
+    function renderSession() {
+      const session = MOBILE_SCANNER.session || {};
+      document.getElementById('sessionTitle').textContent = session.opnameName || session.opnameId || 'Stock Opname';
+      document.getElementById('sessionSubtitle').textContent =
+        (session.department || '-') + ' · ' + (session.departmentOpnameId || '-');
+      renderSummary(session.summary || {});
+
+      if (session.status !== 'IN_PROGRESS') {
+        fatal('This Department is no longer IN PROGRESS. Scanning is locked.');
+      }
+    }
+
+    function renderSummary(summary) {
+      document.getElementById('metricExpected').textContent = Number(summary.expectedAssets || 0);
+      document.getElementById('metricScanned').textContent = Number(summary.scannedAssets || 0);
+      document.getElementById('metricMatched').textContent = Number(summary.matchedAssets || 0);
+      document.getElementById('metricMismatch').textContent = Number(summary.mismatchAssets || 0);
+    }
+
+    async function startCamera() {
+      if (MOBILE_SCANNER.cameraRunning || MOBILE_SCANNER.scanBusy) return;
+
+      if (typeof Html5Qrcode === 'undefined') {
+        fatal('QR scanner library failed to load. Check the internet connection.');
+        return;
+      }
+
+      setReady(false, 'Starting camera...');
+      document.getElementById('startCameraBtn').disabled = true;
+
+      try {
+        const placeholder = document.getElementById('cameraPlaceholder');
+        if (placeholder) placeholder.remove();
+
+        MOBILE_SCANNER.scanner = new Html5Qrcode('reader', { verbose: false });
+
+        await MOBILE_SCANNER.scanner.start(
+          { facingMode: 'environment' },
+          {
+            fps: 12,
+            qrbox: function(viewfinderWidth, viewfinderHeight) {
+              const edge = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.72);
+              return { width: edge, height: edge };
+            },
+            aspectRatio: 1.0,
+            disableFlip: true
+          },
+          function(decodedText) {
+            handleDecodedText(decodedText);
+          },
+          function() {
+            // Decode miss is normal while camera is moving; no UI noise.
+          }
+        );
+
+        MOBILE_SCANNER.cameraRunning = true;
+        document.getElementById('stopCameraBtn').disabled = false;
+        setReady(true, 'Ready for next scan');
+        requestWakeLock();
+
+      } catch (error) {
+        document.getElementById('startCameraBtn').disabled = false;
+        setReady(false, 'Camera unavailable');
+        setFeedback('danger', 'Camera Error', error.message || 'Unable to access camera.', 'Allow camera permission and try again.');
+      }
+    }
+
+    async function stopCamera() {
+      if (!MOBILE_SCANNER.scanner || !MOBILE_SCANNER.cameraRunning) return;
+
+      try {
+        await MOBILE_SCANNER.scanner.stop();
+        await MOBILE_SCANNER.scanner.clear();
+      } catch (ignore) {}
+
+      MOBILE_SCANNER.cameraRunning = false;
+      MOBILE_SCANNER.scanner = null;
+      document.getElementById('startCameraBtn').disabled = false;
+      document.getElementById('stopCameraBtn').disabled = true;
+      setReady(false, 'Camera stopped');
+      releaseWakeLock();
+    }
+
+    function handleDecodedText(decodedText) {
+      const value = String(decodedText || '').trim();
+      if (!value || MOBILE_SCANNER.scanBusy) return;
+
+      const now = Date.now();
+      if (
+        value === MOBILE_SCANNER.lastDecodedText &&
+        now - MOBILE_SCANNER.lastDecodedAt < 1400
+      ) {
+        return;
+      }
+
+      MOBILE_SCANNER.lastDecodedText = value;
+      MOBILE_SCANNER.lastDecodedAt = now;
+      queueScan(value);
+    }
+
+    async function queueScan(rawScan) {
+      if (MOBILE_SCANNER.scanBusy) return;
+
+      MOBILE_SCANNER.scanBusy = true;
+      setReady(false, 'Processing scan...');
+
+      const requestId = createRequestId();
+      document.getElementById('postRequestId').value = requestId;
+      document.getElementById('postRawScan').value = rawScan;
+
+      try {
+        document.getElementById('mobilePostForm').submit();
+        const response = await waitForResult(requestId, 10000);
+        processScanResult(response);
+      } catch (error) {
+        setFeedback('danger', 'Scan Failed', error.message || 'Unable to process scan.', 'The camera remains ready.');
+        signalFeedback('danger');
+      } finally {
+        window.setTimeout(function() {
+          MOBILE_SCANNER.scanBusy = false;
+          setReady(true, 'Ready for next scan');
+        }, 280);
+      }
+    }
+
+    function processScanResult(response) {
+      if (!response || response.success !== true) {
+        throw new Error(response && response.message ? response.message : 'Scan was rejected by AMS.');
+      }
+
+      const payload = response.data || {};
+      const result = payload.result || {};
+      const summary = payload.summary || {};
+      renderSummary(summary);
+
+      if (result.duplicate === true) {
+        setFeedback(
+          'warning',
+          result.assetNo || 'Duplicate',
+          'ALREADY SCANNED · Duplicate #' + Number(result.duplicateCount || 0),
+          result.assetName || ''
+        );
+        signalFeedback('warning');
+        return;
+      }
+
+      const scanResult = String(result.scanResult || '').toUpperCase();
+
+      if (scanResult === 'MATCHED') {
+        setFeedback(
+          'success',
+          result.assetNo || 'Matched',
+          result.assetName || 'Asset matched',
+          (result.assetGroup || '-') + ' · ' + (result.scannedDepartment || '-')
+        );
+        signalFeedback('success');
+        return;
+      }
+
+      if (scanResult === 'DEPARTMENT_MISMATCH' || scanResult === 'UNEXPECTED_ASSET') {
+        setFeedback(
+          'warning',
+          result.assetNo || 'Mismatch',
+          scanResult.replace(/_/g, ' '),
+          'Expected: ' + (result.expectedDepartment || '-') + ' · Found: ' + (result.scannedDepartment || '-')
+        );
+        signalFeedback('warning');
+        return;
+      }
+
+      setFeedback(
+        'danger',
+        scanResult || 'Unknown Scan',
+        response.message || 'Asset could not be matched.',
+        result.rawScan || ''
+      );
+      signalFeedback('danger');
+    }
+
+    function setFeedback(type, title, line1, line2) {
+      const card = document.getElementById('feedbackCard');
+      card.className = 'feedback ' + (type || '');
+      document.getElementById('feedbackLabel').textContent =
+        type === 'success' ? 'Matched' : type === 'warning' ? 'Attention' : type === 'danger' ? 'Error' : 'Ready';
+      document.getElementById('feedbackTitle').textContent = title || '-';
+      document.getElementById('feedbackLine1').textContent = line1 || '';
+      document.getElementById('feedbackLine2').textContent = line2 || '';
+    }
+
+    function setReady(ready, text) {
+      const line = document.getElementById('readyLine');
+      line.classList.toggle('ready', ready === true);
+      document.getElementById('readyText').textContent = text || '';
+    }
+
+    async function waitForResult(requestId, timeoutMs) {
+      const started = Date.now();
+
+      while (Date.now() - started < timeoutMs) {
+        await sleep(250);
+        const response = await jsonpCall('result', { requestId: requestId });
+        if (response && response.pending === true) continue;
+        return response;
+      }
+
+      throw new Error('AMS response timed out. Check the laptop before scanning again.');
+    }
+
+    function jsonpCall(action, extraParams) {
+      return new Promise(function(resolve, reject) {
+        const callbackName = '__amsMobileCb_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+        const script = document.createElement('script');
+        let settled = false;
+
+        const timeout = window.setTimeout(function() {
+          cleanup();
+          reject(new Error('Unable to reach AMS.'));
+        }, 8000);
+
+        function cleanup() {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          try { delete window[callbackName]; } catch (ignore) { window[callbackName] = undefined; }
+          if (script.parentNode) script.parentNode.removeChild(script);
+        }
+
+        window[callbackName] = function(payload) {
+          cleanup();
+          resolve(payload);
+        };
+
+        const url = new URL(MOBILE_SCANNER.apiUrl);
+        url.searchParams.set('api', 'stockOpnameMobile');
+        url.searchParams.set('action', action);
+        url.searchParams.set('token', MOBILE_SCANNER.token);
+        url.searchParams.set('prefix', callbackName);
+        url.searchParams.set('_', String(Date.now()));
+
+        Object.keys(extraParams || {}).forEach(function(key) {
+          url.searchParams.set(key, extraParams[key]);
+        });
+
+        script.onerror = function() {
+          cleanup();
+          reject(new Error('AMS API request failed.'));
+        };
+
+        script.src = url.toString();
+        document.head.appendChild(script);
+      });
+    }
+
+    function createRequestId() {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID().replace(/-/g, '');
+      }
+
+      return (
+        Date.now().toString(36) +
+        Math.random().toString(36).slice(2) +
+        Math.random().toString(36).slice(2)
+      );
+    }
+
+    function signalFeedback(type) {
+      try {
+        if (navigator.vibrate) {
+          if (type === 'success') navigator.vibrate(55);
+          else if (type === 'warning') navigator.vibrate([70, 55, 70]);
+          else navigator.vibrate([110, 65, 110]);
+        }
+      } catch (ignore) {}
+
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) return;
+        const ctx = new AudioContextClass();
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.value = type === 'success' ? 880 : type === 'warning' ? 540 : 260;
+        gain.gain.value = 0.05;
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+        oscillator.start();
+        oscillator.stop(ctx.currentTime + (type === 'success' ? 0.08 : 0.14));
+        oscillator.onended = function() { ctx.close(); };
+      } catch (ignore) {}
+    }
+
+    async function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator) {
+          MOBILE_SCANNER.wakeLock = await navigator.wakeLock.request('screen');
+        }
+      } catch (ignore) {}
+    }
+
+    function releaseWakeLock() {
+      try {
+        if (MOBILE_SCANNER.wakeLock) {
+          MOBILE_SCANNER.wakeLock.release();
+          MOBILE_SCANNER.wakeLock = null;
+        }
+      } catch (ignore) {}
+    }
+
+    function fatal(message) {
+      const box = document.getElementById('fatalError');
+      box.textContent = message || 'Mobile Scanner cannot continue.';
+      box.classList.remove('hidden');
+      document.getElementById('cameraCard').classList.add('hidden');
+    }
+
+    function sleep(ms) {
+      return new Promise(function(resolve) {
+        window.setTimeout(resolve, ms);
+      });
+    }
+  </script>
+</body>
+</html>
