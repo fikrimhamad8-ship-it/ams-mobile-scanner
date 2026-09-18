@@ -485,17 +485,47 @@
       document.getElementById('postRawScan').value = rawScan;
 
       try {
+        // WRITE is submitted once. Never automatically resubmit the same scan,
+        // because the first POST may already have reached AMS even when a later
+        // result-poll request suffers a temporary network error.
         document.getElementById('mobilePostForm').submit();
-        const response = await waitForResult(requestId, 10000);
+
+        const response = await waitForResult(requestId, 15000);
         processScanResult(response);
+
       } catch (error) {
-        setFeedback('danger', 'Scan Failed', error.message || 'Unable to process scan.', 'The camera remains ready.');
-        signalFeedback('danger');
+        // Do not tell the operator that the asset definitely failed to scan.
+        // The POST may already have been committed while only the read-back
+        // acknowledgement was interrupted. This avoids unnecessary rescans
+        // that would create artificial duplicates.
+        setFeedback(
+          'warning',
+          'Confirmation Delayed',
+          'The scan was submitted, but AMS confirmation was not received in time.',
+          'Check the laptop before scanning this same asset again.'
+        );
+        signalFeedback('warning');
+
+        // Best-effort summary refresh. If AMS is reachable again, at least the
+        // counters on the phone catch up even when the exact scan response was
+        // missed.
+        try {
+          const sessionResponse = await jsonpCall('session', {}, 5000);
+          if (
+            sessionResponse &&
+            sessionResponse.success === true &&
+            sessionResponse.data
+          ) {
+            MOBILE_SCANNER.session = sessionResponse.data;
+            renderSummary(sessionResponse.data.summary || {});
+          }
+        } catch (ignore) {}
+
       } finally {
         window.setTimeout(function() {
           MOBILE_SCANNER.scanBusy = false;
           setReady(true, 'Ready for next scan');
-        }, 280);
+        }, 360);
       }
     }
 
@@ -571,18 +601,44 @@
 
     async function waitForResult(requestId, timeoutMs) {
       const started = Date.now();
+      let lastTransportError = null;
 
       while (Date.now() - started < timeoutMs) {
-        await sleep(250);
-        const response = await jsonpCall('result', { requestId: requestId });
-        if (response && response.pending === true) continue;
-        return response;
+        await sleep(300);
+
+        try {
+          // Result polling is intentionally short and retryable. A single
+          // JSONP/network hiccup must not turn an already-committed scan into
+          // a false "Scan Failed" message on the phone.
+          const response = await jsonpCall(
+            'result',
+            { requestId: requestId },
+            2800
+          );
+
+          lastTransportError = null;
+
+          if (response && response.pending === true) {
+            continue;
+          }
+
+          return response;
+
+        } catch (error) {
+          lastTransportError = error;
+          // Keep polling until the overall deadline. Do not resubmit POST.
+          await sleep(350);
+        }
       }
 
-      throw new Error('AMS response timed out. Check the laptop before scanning again.');
+      throw new Error(
+        lastTransportError && lastTransportError.message
+          ? lastTransportError.message
+          : 'AMS response timed out.'
+      );
     }
 
-    function jsonpCall(action, extraParams) {
+    function jsonpCall(action, extraParams, timeoutMs) {
       return new Promise(function(resolve, reject) {
         const callbackName = '__amsMobileCb_' + Date.now() + '_' + Math.random().toString(36).slice(2);
         const script = document.createElement('script');
@@ -591,7 +647,7 @@
         const timeout = window.setTimeout(function() {
           cleanup();
           reject(new Error('Unable to reach AMS.'));
-        }, 8000);
+        }, Number(timeoutMs || 8000));
 
         function cleanup() {
           if (settled) return;
