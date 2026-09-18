@@ -4,7 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f172a">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>AMS Mobile Stock Opname Scanner</title>
+  <!-- Speed & Camera Optimization v2: main-camera preference, selector, instant scan feedback. -->
 
   <!-- External HTTPS camera page. Host this file outside Apps Script HTMLService. -->
   <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -20,6 +24,7 @@
       --success: #16a34a;
       --warning: #d97706;
       --danger: #dc2626;
+      --processing: #2563eb;
     }
 
     * { box-sizing: border-box; }
@@ -129,6 +134,49 @@
       border-radius: 14px;
     }
 
+    .camera-tools {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 6px;
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #f8fafc;
+    }
+
+    .camera-tools label {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .camera-tools select {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 9px 34px 9px 10px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .camera-tools select:focus {
+      border-color: #93c5fd;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, .10);
+    }
+
+    .camera-hint {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
     .actions {
       display: flex;
       gap: 8px;
@@ -173,6 +221,17 @@
       box-shadow: 0 0 0 4px rgba(34, 197, 94, .13);
     }
 
+    .ready-line.processing .dot {
+      background: #f59e0b;
+      box-shadow: 0 0 0 4px rgba(245, 158, 11, .14);
+      animation: pulse-dot 1s ease-in-out infinite;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: .55; transform: scale(.78); }
+    }
+
     .feedback {
       padding: 16px;
       border: 1px solid var(--border);
@@ -181,6 +240,7 @@
       min-height: 126px;
     }
 
+    .feedback.processing { border-color: #bfdbfe; background: #eff6ff; }
     .feedback.success { border-color: #bbf7d0; background: #f0fdf4; }
     .feedback.warning { border-color: #fed7aa; background: #fff7ed; }
     .feedback.danger { border-color: #fecaca; background: #fef2f2; }
@@ -192,6 +252,7 @@
       text-transform: uppercase;
     }
 
+    .feedback.processing .feedback-label { color: var(--processing); }
     .feedback.success .feedback-label { color: var(--success); }
     .feedback.warning .feedback-label { color: var(--warning); }
     .feedback.danger .feedback-label { color: var(--danger); }
@@ -279,6 +340,14 @@
         </div>
       </div>
 
+      <div class="camera-tools">
+        <label for="cameraSelect">Camera</label>
+        <select id="cameraSelect" disabled>
+          <option value="">Auto — Main rear camera</option>
+        </select>
+        <div class="camera-hint" id="cameraHint">Main rear camera is prioritized. Ultra-wide and telephoto are avoided when the browser exposes camera labels.</div>
+      </div>
+
       <div class="actions">
         <button class="primary" id="startCameraBtn" type="button">Start Camera</button>
         <button class="secondary" id="stopCameraBtn" type="button" disabled>Stop Camera</button>
@@ -326,7 +395,12 @@
       scanBusy: false,
       lastDecodedText: '',
       lastDecodedAt: 0,
-      wakeLock: null
+      lastCompletedText: '',
+      lastCompletedAt: 0,
+      wakeLock: null,
+      cameras: [],
+      selectedCameraId: '',
+      cameraLabel: ''
     };
 
     const params = new URLSearchParams(window.location.search);
@@ -335,6 +409,15 @@
 
     document.getElementById('startCameraBtn').addEventListener('click', startCamera);
     document.getElementById('stopCameraBtn').addEventListener('click', stopCamera);
+    document.getElementById('cameraSelect').addEventListener('change', async function(event) {
+      const nextId = String(event.target.value || '').trim();
+      MOBILE_SCANNER.selectedCameraId = nextId;
+      try { localStorage.setItem('amsMobileScannerCameraId', nextId); } catch (ignore) {}
+
+      if (MOBILE_SCANNER.cameraRunning) {
+        await restartCamera();
+      }
+    });
     document.getElementById('manualForm').addEventListener('submit', function(event) {
       event.preventDefault();
       const input = document.getElementById('manualInput');
@@ -401,24 +484,40 @@
         return;
       }
 
-      setReady(false, 'Starting camera...');
+      setScannerState('processing', 'Preparing camera...');
       document.getElementById('startCameraBtn').disabled = true;
+      document.getElementById('cameraSelect').disabled = true;
 
       try {
         const placeholder = document.getElementById('cameraPlaceholder');
         if (placeholder) placeholder.remove();
 
-        MOBILE_SCANNER.scanner = new Html5Qrcode('reader', { verbose: false });
+        await loadCameraList();
+
+        if (!MOBILE_SCANNER.scanner) {
+          const scannerConfig = { verbose: false };
+          if (typeof Html5QrcodeSupportedFormats !== 'undefined') {
+            scannerConfig.formatsToSupport = [Html5QrcodeSupportedFormats.QR_CODE];
+          }
+          MOBILE_SCANNER.scanner = new Html5Qrcode('reader', scannerConfig);
+        }
+
+        const cameraSource = MOBILE_SCANNER.selectedCameraId
+          ? MOBILE_SCANNER.selectedCameraId
+          : { facingMode: 'environment' };
 
         await MOBILE_SCANNER.scanner.start(
-          { facingMode: 'environment' },
+          cameraSource,
           {
-            fps: 12,
+            fps: 15,
             qrbox: function(viewfinderWidth, viewfinderHeight) {
-              const edge = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.72);
-              return { width: edge, height: edge };
+              const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+              const edge = Math.max(220, Math.floor(minEdge * 0.84));
+              return {
+                width: Math.min(edge, viewfinderWidth - 12),
+                height: Math.min(edge, viewfinderHeight - 12)
+              };
             },
-            aspectRatio: 1.0,
             disableFlip: true
           },
           function(decodedText) {
@@ -431,12 +530,17 @@
 
         MOBILE_SCANNER.cameraRunning = true;
         document.getElementById('stopCameraBtn').disabled = false;
-        setReady(true, 'Ready for next scan');
+        document.getElementById('cameraSelect').disabled = MOBILE_SCANNER.cameras.length < 2;
+        await optimizeActiveCameraTrack();
+        updateCameraHint();
+        setScannerState('ready', 'Ready for next scan');
         requestWakeLock();
 
       } catch (error) {
+        MOBILE_SCANNER.cameraRunning = false;
         document.getElementById('startCameraBtn').disabled = false;
-        setReady(false, 'Camera unavailable');
+        document.getElementById('cameraSelect').disabled = MOBILE_SCANNER.cameras.length < 2;
+        setScannerState('idle', 'Camera unavailable');
         setFeedback('danger', 'Camera Error', error.message || 'Unable to access camera.', 'Allow camera permission and try again.');
       }
     }
@@ -453,8 +557,162 @@
       MOBILE_SCANNER.scanner = null;
       document.getElementById('startCameraBtn').disabled = false;
       document.getElementById('stopCameraBtn').disabled = true;
-      setReady(false, 'Camera stopped');
+      document.getElementById('cameraSelect').disabled = MOBILE_SCANNER.cameras.length < 2;
+      setScannerState('idle', 'Camera stopped');
       releaseWakeLock();
+    }
+
+    async function restartCamera() {
+      const wasRunning = MOBILE_SCANNER.cameraRunning;
+      if (!wasRunning) return;
+
+      try {
+        await stopCamera();
+        await sleep(220);
+        await startCamera();
+      } catch (error) {
+        setFeedback('danger', 'Camera Error', error.message || 'Unable to switch camera.', 'Choose another camera or restart the scanner.');
+      }
+    }
+
+    async function loadCameraList() {
+      let cameras = [];
+
+      try {
+        cameras = await Html5Qrcode.getCameras();
+      } catch (error) {
+        // Camera permission may still be granted by Html5Qrcode.start().
+        cameras = [];
+      }
+
+      MOBILE_SCANNER.cameras = Array.isArray(cameras) ? cameras : [];
+
+      const select = document.getElementById('cameraSelect');
+      select.innerHTML = '';
+
+      if (!MOBILE_SCANNER.cameras.length) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'Auto — Rear camera';
+        select.appendChild(option);
+        MOBILE_SCANNER.selectedCameraId = '';
+        select.disabled = true;
+        return;
+      }
+
+      let savedCameraId = '';
+      try { savedCameraId = localStorage.getItem('amsMobileScannerCameraId') || ''; } catch (ignore) {}
+
+      const savedExists = MOBILE_SCANNER.cameras.some(function(camera) {
+        return String(camera.id || '') === savedCameraId;
+      });
+
+      const preferredCamera = savedExists
+        ? MOBILE_SCANNER.cameras.find(function(camera) { return String(camera.id || '') === savedCameraId; })
+        : choosePreferredCamera(MOBILE_SCANNER.cameras);
+
+      MOBILE_SCANNER.selectedCameraId = preferredCamera ? String(preferredCamera.id || '') : '';
+      MOBILE_SCANNER.cameraLabel = preferredCamera ? String(preferredCamera.label || '') : '';
+
+      MOBILE_SCANNER.cameras.forEach(function(camera, index) {
+        const option = document.createElement('option');
+        option.value = String(camera.id || '');
+        const isPreferred = option.value === MOBILE_SCANNER.selectedCameraId;
+        option.textContent = (isPreferred ? 'Recommended — ' : '') + describeCamera(camera, index);
+        if (isPreferred) option.selected = true;
+        select.appendChild(option);
+      });
+
+      select.disabled = MOBILE_SCANNER.cameras.length < 2;
+    }
+
+    function choosePreferredCamera(cameras) {
+      if (!Array.isArray(cameras) || !cameras.length) return null;
+
+      const ranked = cameras.map(function(camera, index) {
+        const label = String(camera.label || '').toLowerCase();
+        let score = 0;
+
+        if (/back|rear|environment/.test(label)) score += 120;
+        if (/main|primary|standard/.test(label)) score += 55;
+        if (/camera2\s*0\b|camera\s*0\b/.test(label)) score += 30;
+
+        if (/front|user|selfie/.test(label)) score -= 500;
+        if (/ultra[\s-]*wide|ultrawide|0\.5x?|0,5x?/.test(label)) score -= 170;
+        if (/telephoto|tele\b/.test(label)) score -= 120;
+        if (/macro/.test(label)) score -= 100;
+
+        // Stable tie-breaker. Earlier devices commonly map the primary rear
+        // camera before auxiliary rear lenses on Android/Chrome.
+        score -= index * 0.01;
+
+        return { camera: camera, score: score };
+      });
+
+      ranked.sort(function(a, b) { return b.score - a.score; });
+      return ranked[0].camera;
+    }
+
+    function describeCamera(camera, index) {
+      const raw = String(camera && camera.label || '').trim();
+      if (raw) return raw;
+      return 'Camera ' + (index + 1);
+    }
+
+    async function optimizeActiveCameraTrack() {
+      try {
+        const video = document.querySelector('#reader video');
+        const stream = video && video.srcObject;
+        const track = stream && typeof stream.getVideoTracks === 'function'
+          ? stream.getVideoTracks()[0]
+          : null;
+
+        if (!track) return;
+
+        const label = String(track.label || '').trim();
+        if (label) MOBILE_SCANNER.cameraLabel = label;
+
+        const capabilities = typeof track.getCapabilities === 'function'
+          ? track.getCapabilities()
+          : {};
+
+        const advanced = {};
+
+        if (
+          Array.isArray(capabilities.focusMode) &&
+          capabilities.focusMode.indexOf('continuous') !== -1
+        ) {
+          advanced.focusMode = 'continuous';
+        }
+
+        if (
+          capabilities.zoom &&
+          Number.isFinite(Number(capabilities.zoom.min)) &&
+          Number.isFinite(Number(capabilities.zoom.max))
+        ) {
+          const minZoom = Number(capabilities.zoom.min);
+          const maxZoom = Number(capabilities.zoom.max);
+          if (minZoom <= 1 && maxZoom >= 1) {
+            advanced.zoom = 1;
+          }
+        }
+
+        if (Object.keys(advanced).length && typeof track.applyConstraints === 'function') {
+          try { await track.applyConstraints({ advanced: [advanced] }); } catch (ignore) {}
+        }
+      } catch (ignore) {}
+    }
+
+    function updateCameraHint() {
+      const label = String(MOBILE_SCANNER.cameraLabel || '').trim();
+      const hint = document.getElementById('cameraHint');
+      if (!hint) return;
+
+      if (label) {
+        hint.textContent = 'Active: ' + label + '. Use the selector if the preview still looks ultra-wide.';
+      } else {
+        hint.textContent = 'Rear camera active. Use the selector if the preview still looks ultra-wide.';
+      }
     }
 
     function handleDecodedText(decodedText) {
@@ -462,12 +720,15 @@
       if (!value || MOBILE_SCANNER.scanBusy) return;
 
       const now = Date.now();
-      if (
+      const sameRecentDecode =
         value === MOBILE_SCANNER.lastDecodedText &&
-        now - MOBILE_SCANNER.lastDecodedAt < 1400
-      ) {
-        return;
-      }
+        now - MOBILE_SCANNER.lastDecodedAt < 900;
+
+      const sameRecentlyCompleted =
+        value === MOBILE_SCANNER.lastCompletedText &&
+        now - MOBILE_SCANNER.lastCompletedAt < 1800;
+
+      if (sameRecentDecode || sameRecentlyCompleted) return;
 
       MOBILE_SCANNER.lastDecodedText = value;
       MOBILE_SCANNER.lastDecodedAt = now;
@@ -478,7 +739,16 @@
       if (MOBILE_SCANNER.scanBusy) return;
 
       MOBILE_SCANNER.scanBusy = true;
-      setReady(false, 'Processing scan...');
+
+      const detectedId = extractDetectedAssetToken(rawScan);
+      setScannerState('processing', 'QR detected — processing...');
+      setFeedback(
+        'processing',
+        detectedId || 'QR Detected',
+        'QR DETECTED · Processing...',
+        'Do not scan this label again yet.'
+      );
+      signalDetected();
 
       const requestId = createRequestId();
       document.getElementById('postRequestId').value = requestId;
@@ -522,10 +792,13 @@
         } catch (ignore) {}
 
       } finally {
+        MOBILE_SCANNER.lastCompletedText = String(rawScan || '').trim();
+        MOBILE_SCANNER.lastCompletedAt = Date.now();
+
         window.setTimeout(function() {
           MOBILE_SCANNER.scanBusy = false;
-          setReady(true, 'Ready for next scan');
-        }, 360);
+          setScannerState('ready', 'Ready for next scan');
+        }, 320);
       }
     }
 
@@ -587,16 +860,52 @@
       const card = document.getElementById('feedbackCard');
       card.className = 'feedback ' + (type || '');
       document.getElementById('feedbackLabel').textContent =
-        type === 'success' ? 'Matched' : type === 'warning' ? 'Attention' : type === 'danger' ? 'Error' : 'Ready';
+        type === 'processing' ? 'Detected' :
+        type === 'success' ? 'Matched' :
+        type === 'warning' ? 'Attention' :
+        type === 'danger' ? 'Error' : 'Ready';
       document.getElementById('feedbackTitle').textContent = title || '-';
       document.getElementById('feedbackLine1').textContent = line1 || '';
       document.getElementById('feedbackLine2').textContent = line2 || '';
     }
 
-    function setReady(ready, text) {
+    function setScannerState(state, text) {
       const line = document.getElementById('readyLine');
-      line.classList.toggle('ready', ready === true);
+      line.classList.remove('ready', 'processing');
+
+      if (state === 'ready') line.classList.add('ready');
+      if (state === 'processing') line.classList.add('processing');
+
       document.getElementById('readyText').textContent = text || '';
+    }
+
+    function setReady(ready, text) {
+      setScannerState(ready === true ? 'ready' : 'idle', text);
+    }
+
+    function extractDetectedAssetToken(rawScan) {
+      const value = String(rawScan || '').trim();
+      if (!value) return '';
+
+      const idMatch = value.match(/[?&](?:amp;)?id=([A-Za-z0-9_-]+)/i);
+      if (idMatch && idMatch[1]) {
+        return normalizeDisplayAssetNo(idMatch[1]);
+      }
+
+      const directMatch = value.match(/\bAST[-_ ]?0*([0-9]+)\b/i);
+      if (directMatch) {
+        const digits = String(directMatch[1] || '').padStart(6, '0');
+        return 'AST-' + digits;
+      }
+
+      return value.length > 34 ? value.slice(0, 31) + '...' : value;
+    }
+
+    function normalizeDisplayAssetNo(value) {
+      const cleaned = String(value || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+      const match = cleaned.match(/^AST0*([0-9]+)$/);
+      if (!match) return String(value || '');
+      return 'AST-' + String(match[1] || '').padStart(6, '0');
     }
 
     async function waitForResult(requestId, timeoutMs) {
@@ -695,13 +1004,9 @@
       );
     }
 
-    function signalFeedback(type) {
+    function signalDetected() {
       try {
-        if (navigator.vibrate) {
-          if (type === 'success') navigator.vibrate(55);
-          else if (type === 'warning') navigator.vibrate([70, 55, 70]);
-          else navigator.vibrate([110, 65, 110]);
-        }
+        if (navigator.vibrate) navigator.vibrate(35);
       } catch (ignore) {}
 
       try {
@@ -710,13 +1015,43 @@
         const ctx = new AudioContextClass();
         const oscillator = ctx.createOscillator();
         const gain = ctx.createGain();
+        oscillator.type = 'square';
+        oscillator.frequency.value = 980;
+        gain.gain.value = 0.035;
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+        oscillator.start();
+        oscillator.stop(ctx.currentTime + 0.055);
+        oscillator.onended = function() { ctx.close(); };
+      } catch (ignore) {}
+    }
+
+    function signalFeedback(type) {
+      try {
+        if (navigator.vibrate) {
+          if (type === 'success') navigator.vibrate(45);
+          else if (type === 'warning') navigator.vibrate([70, 55, 70]);
+          else navigator.vibrate([110, 65, 110]);
+        }
+      } catch (ignore) {}
+
+      // A successful QR read already produced an immediate read-beep in
+      // signalDetected(). Only warning/error results add a second audible tone.
+      if (type === 'success') return;
+
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) return;
+        const ctx = new AudioContextClass();
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
         oscillator.type = 'sine';
-        oscillator.frequency.value = type === 'success' ? 880 : type === 'warning' ? 540 : 260;
+        oscillator.frequency.value = type === 'warning' ? 540 : 260;
         gain.gain.value = 0.05;
         oscillator.connect(gain);
         gain.connect(ctx.destination);
         oscillator.start();
-        oscillator.stop(ctx.currentTime + (type === 'success' ? 0.08 : 0.14));
+        oscillator.stop(ctx.currentTime + 0.14);
         oscillator.onended = function() { ctx.close(); };
       } catch (ignore) {}
     }
